@@ -101,6 +101,8 @@ ret_int_abdc <- filtered_data %>%
   filter(
     tolower(filtered_data$journal) %in% tolower(abdc$journal)
   )
+
+write.csv(ret_int_abdc, "ret_int_abdc.csv")
 ```
 
 There are 951 data points with the conference articles, and 883 without the conference and other types of articles.  
@@ -175,30 +177,207 @@ corpus = tm_map(corpus, removeWords, stopwords("english"))
 
 # Create a word cloud
 wordcloud(corpus, max.words = 100)
+```
+
+
+```{r}
+# Define the patterns for each category
+patterns <- list(
+  Intellectual_Property_Violations = c("Plagiarism", "Duplication", "Euphemisms for Plagiarism", "False/Forged Authorship"),
+  Research_Integrity_and_Quality_Issues = c("Not Reproducible", "Unreliable Results", "Error in Text", "Error in Analyses", "Error in Methods", "Error in Data", "Error in Results", "Fabrication", "Falsification", "Ethical Violations", "Issues About Data"),
+  Peer_Review_and_Editorial_Concerns = c("Fake Peer Review", "Rogue Editor", "Investigation by Journal/Publisher", "Error by Journal/Publisher", "Objections by Author"),
+  Policy_and_Legal_Concerns = c("Breach of Policy", "Issues about Referencing", "Legal Reasons", "Lack of Approval"),
+  Publication_and_Communication_Issues = c("Withdrawal", "Limited or No Information", "Notice - Lack of", "Author Unresponsive", "Update of Prior Notice"),
+  Investigations_and_Actions = c("Investigation by Third Party", "Doing the Right Thing"),
+  Miscellaneous_Issues = c("Date of Retraction", "Randomly Generated Content", "Original Data not Provided", "Concerns About Image")
+)
+
+# Function to create dummy variables for categories based on the presence of certain patterns
+create_dummy_vars <- function(df, patterns) {
+  for (category in names(patterns)) {
+    pattern <- patterns[[category]]
+    df[[category]] <- as.integer(sapply(df$reason, function(x) {
+      any(sapply(pattern, function(y) str_detect(x, regex(y, ignore_case = TRUE))))
+    }))
+  }
+  return(df)
+}
+
+# Apply the function to the data frame
+our_interest <- create_dummy_vars(our_interest, patterns)
+
+# Ensure these columns exist in your our_interest dataframe
+selected_columns <- c("Intellectual_Property_Violations", "Research_Integrity_and_Quality_Issues", 
+                      "Peer_Review_and_Editorial_Concerns", "Policy_and_Legal_Concerns", 
+                      "Publication_and_Communication_Issues", "Investigations_and_Actions", 
+                      "Miscellaneous_Issues")
+
+# Check if all selected columns are present in our_interest
+if(all(selected_columns %in% names(our_interest))) {
+    # Select only the specified dummy variable columns
+    dummy_data <- our_interest[, selected_columns]
+
+    # Calculate the correlation matrix
+    cor_matrix <- cor(dummy_data, use = "complete.obs") # use complete.obs to handle NA values
+
+    # Melt the correlation matrix for visualization
+    melted_cor_matrix <- reshape2::melt(cor_matrix)
+
+    # Plot the correlation matrix with numbers
+    ggplot(data = melted_cor_matrix, aes(x=Var1, y=Var2, fill=value)) +
+        geom_tile() +
+        geom_text(aes(label = round(value, 2)), color = "black", size = 3) +
+        scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                             midpoint = 0, limit = c(-1,1), space = "Lab", 
+                             name="Pearson\nCorrelation") +
+        theme_minimal() +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1),
+              axis.title = element_blank())
+
+} else {
+    stop("Not all specified columns exist in the dataframe.")
+}
 
 ```
 
 ```{r}
-library(igraph)
-library(ggraph)
+# Step 1: Split the 'reason' field into individual reasons and remove the '+' prefix
+reasons_list <- strsplit(gsub("^\\+", "", our_interest$reason), ";")
 
-# Apply a threshold and take absolute values
-threshold <- 0.9
-adj_matrix <- abs(subject_correlation)
-adj_matrix[adj_matrix < threshold] <- 0
-diag(adj_matrix) <- 0  # Remove self-loops
+# Step 2: Identify unique reasons
+unique_reasons <- unique(unlist(reasons_list))
 
-# Create a graph from the adjusted adjacency matrix
-graph <- graph_from_adjacency_matrix(adj_matrix, weighted = TRUE, mode = "undirected")
+# Step 3: Create dummy variables for each unique reason
+for(reason in unique_reasons) {
+  our_interest[[reason]] <- sapply(reasons_list, function(x) as.integer(reason %in% x))
+}
 
-# Plot the network
-ggraph(graph, layout = "fr") +
-  geom_edge_link(aes(edge_alpha = weight), show.legend = FALSE) +
-  geom_node_point(color = "lightblue", size = 5) +
-  geom_node_text(aes(label = name), repel = TRUE) +
-  theme_minimal()
+# Select only dummy variables (and any other numeric variables you want to include)
+numeric_data <- our_interest[, sapply(our_interest, is.numeric)]
+
+# Compute the correlation matrix for numeric data
+cor_matrix <- cor(numeric_data)
+
+# Melt the correlation matrix for visualization
+melted_cor_matrix <- reshape2::melt(cor_matrix)
+
+# Define a threshold for displaying text
+threshold <- 0.5
+
+# Plot the correlation matrix
+ggplot(data = melted_cor_matrix, aes(x=Var1, y=Var2, fill=value)) +
+    geom_tile() +
+    geom_text(aes(label = ifelse(abs(value) > threshold, round(value, 2), '')), color = "black", size = 2.5) +
+    scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                         midpoint = 0, limit = c(-1,1), space = "Lab", 
+                         name="Pearson\nCorrelation") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 4),
+          axis.text.y = element_text(size = 6),
+          axis.title = element_blank()) +
+    coord_fixed() # Ensure square cells 
+```
+
+
+```{r}
+# Prepare data
+yearly_data <- ret_int_abdc %>%
+  group_by(retraction_year) %>%
+  summarize(average_duration = mean(duration_in_months, na.rm = TRUE),
+            retraction_count = n())
+
+# Normalize the RetractionCount for better visualization
+max_duration <- max(yearly_data$average_duration, na.rm = TRUE)
+max_count <- max(yearly_data$retraction_count, na.rm = TRUE)
+yearly_data$NormalizedCount <- yearly_data$retraction_count / max_count * max_duration
+
+retractions_management<- ggplot(yearly_data, aes(x = retraction_year)) +
+  geom_line(aes(y = average_duration, group = 1), color = "blue") +
+  geom_point(aes(y = average_duration), color = "blue") +
+  geom_bar(aes(y = NormalizedCount), stat = "identity", fill = "red", alpha = 0.5) +
+    scale_x_continuous(limits = c(2000, NA)) +
+
+  scale_y_continuous(name = "Average Duration in Months", 
+                     sec.axis = sec_axis(~ . * max_count / max_duration, 
+                                         name = "Number of Retractions")) +
+  labs(title = "Retractions over the Years: Duration and Count (ABDC)",
+       x = "Retraction Year") +
+  theme(
+    plot.title = element_text(hjust = 0.5),  # Center-align the title
+    plot.subtitle = element_text(hjust = 0.5),  # Center-align the subtitle if you have one
+    axis.title.x = element_text(hjust = 0.5)  # Center-align the x-axis label
+  )
+
+
+retractions_management
+```
+
+
+## Creating a correlation plot to see which meta subjects keep occuring together
+```{r}
+# Extract meta-subjects from the 'subject' column
+our_interest$meta_subjects <- str_extract_all(our_interest$subject, "\\(.*?\\)")
+
+# Create a unique list of all meta-subjects
+all_meta_subjects <- unique(unlist(our_interest$meta_subjects))
+
+# Function to create dummy variables
+create_dummy <- function(meta_subjects, subject) {
+  as.integer(subject %in% meta_subjects)
+}
+
+# Apply the function to create dummy variables for each meta-subject
+for (meta_subject in all_meta_subjects) {
+  our_interest[[meta_subject]] <- sapply(our_interest$meta_subjects, create_dummy, subject = meta_subject)
+}
+
+# Select only the meta-subject dummy variables
+meta_subject_cols <- all_meta_subjects
+
+# Calculate the correlation matrix
+cor_matrix <- cor(our_interest[, meta_subject_cols], use = "complete.obs")
+
+
+# Melt the correlation matrix for visualization
+melted_cor_matrix <- melt(cor_matrix)
+
+# Plot the correlation matrix
+ggplot(data = melted_cor_matrix, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile() +
+  geom_text(aes(label = round(value, 2)), color = "black", size = 3) +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                       midpoint = 0, limit = c(-1, 1), space = "Lab", 
+                       name = "Pearson\nCorrelation") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title = element_blank())
 
 ```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
