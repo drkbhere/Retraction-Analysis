@@ -1,0 +1,169 @@
+---
+title: "retraction watch"
+output: html_document
+date: "2023-11-04"
+---
+
+
+Base libraries
+```{r}
+library(tidyverse)
+library(rvest)
+library(httr)
+library(rcrossref)
+```
+
+Creating the function necessary to do our work
+```{r}
+#creating a function to pull all the data necessary from the DOIs
+get_article_metadata <- function(doi) {
+  metadata <- cr_works(dois = doi)$data
+  
+  # Initialize all variables with NA to handle cases where information is not available
+  title <- NA
+  publication_year <- NA
+  type <- NA
+  publisher <- NA
+  issn <- NA
+  volume <- NA
+  issue <- NA
+  page <- NA
+  abstract <- NA
+  subject <- NA
+  affiliation <- NA
+  funder_info <- NA
+  license_info <- NA
+  update_policy <- NA
+  link <- NA
+  cited_by_count <- NA
+  editor_names <- NA
+  container_title <- NA
+  author_names <- NA
+  retraction_info <- NA
+  
+# Extract each piece of information safely
+  if (!is.null(metadata$title)) title <- metadata$title
+  if (!is.null(metadata$issued) && 'date-parts' %in% names(metadata$issued)) {
+    date_parts <- metadata$issued[['date-parts']]
+    if (length(date_parts) > 0 && length(date_parts[[1]]) > 0) {
+      publication_year <- date_parts[[1]][[1]]
+    }
+  }
+  if (!is.null(metadata$type)) type <- metadata$type
+  if (!is.null(metadata$publisher)) publisher <- metadata$publisher
+  if (!is.null(metadata$ISSN)) issn <- metadata$ISSN
+  if (!is.null(metadata$volume)) volume <- metadata$volume
+  if (!is.null(metadata$issue)) issue <- metadata$issue
+  if (!is.null(metadata$page)) page <- metadata$page
+  if (!is.null(metadata$abstract)) abstract <- metadata$abstract
+  if (!is.null(metadata$subject)) subject <- metadata$subject
+  if (!is.null(metadata$author)) {
+    authors <- metadata$author
+    author_names <- sapply(authors, function(a) paste(a$given, a$family))
+  }
+  if (!is.null(metadata$affiliation)) {
+    affiliations <- metadata$affiliation
+    affiliation <- sapply(affiliations, function(a) a$name)
+  }
+  if (!is.null(metadata$funder)) {
+    funders <- metadata$funder
+    funder_info <- sapply(funders, function(f) paste(f$name, f$award))
+  }
+  if (!is.null(metadata$license)) {
+    licenses <- metadata$license
+    license_info <- sapply(licenses, function(l) l$URL)
+  }
+  if (!is.null(metadata$update_policy)) update_policy <- metadata$update_policy
+  if (!is.null(metadata$link)) {
+    links <- metadata$link
+    link <- sapply(links, function(l) l$URL)
+  }
+  if (!is.null(metadata$reference_count)) cited_by_count <- metadata$reference_count
+  if (!is.null(metadata$editor)) {
+    editors <- metadata$editor
+    editor_names <- sapply(editors, function(e) paste(e$given, e$family))
+  }
+  if (!is.null(metadata$`container-title`)) container_title <- metadata$`container-title`
+  if (!is.null(metadata$`update-to`)) {
+    retraction_info <- metadata$`update-to`
+  }
+  
+# Return a list with all the extracted information
+  return(list(
+    title = title,
+    publication_year = publication_year,
+    type = type,
+    publisher = publisher,
+    issn = issn,
+    volume = volume,
+    issue = issue,
+    page = page,
+    abstract = abstract,
+    subject = subject,
+    authors = author_names,
+    affiliation = affiliation,
+    funder_info = funder_info,
+    license_info = license_info,
+    update_policy = update_policy,
+    link = link,
+    cited_by_count = cited_by_count,
+    editor_names = editor_names,
+    container_title = container_title,
+    retraction_info = retraction_info
+  ))
+}
+```
+
+Loading the dataset and declaring a list to work with
+```{r}
+data<- read.csv("data.csv")
+
+list_of_dois <- data$doi
+```
+
+Pulling all the necessary information in a loop
+```{r}
+metadata_results <- lapply(list_of_dois, get_article_metadata)
+
+# Function to safely extract and collapse a list field into a single string
+collapse_field <- function(field_data, sep = "; ") {
+  if (is.null(field_data)) {
+    return(NA)
+  }
+  # Collapse the list into a single string if it's not empty
+  return(paste(sapply(field_data, function(x) {
+    if (!is.null(x$family) && !is.null(x$given)) {
+      paste(x$given, x$family)
+    } else {
+      ""
+    }
+  }), collapse = sep))
+}
+```
+
+Convert each list of metadata into a data frame row, and then appending them to make a proper dataframe to use
+```{r}
+metadata_df <- do.call(rbind, lapply(metadata_results, function(metadata) {
+  # Initialize an empty vector to store the collapsed fields
+  collapsed_metadata <- vector("list", length = length(metadata))
+  names(collapsed_metadata) <- names(metadata)
+  
+  # Iterate over each metadata field
+  for (field_name in names(metadata)) {
+    field_data <- metadata[[field_name]]
+    if (is.list(field_data)) {
+      # Collapse list fields into a single string
+      collapsed_metadata[[field_name]] <- collapse_field(field_data)
+    } else {
+      collapsed_metadata[[field_name]] <- field_data
+    }
+  }
+  
+  # Convert the named list into a single-row data frame
+  as.data.frame(t(collapsed_metadata), stringsAsFactors = FALSE)
+}))
+
+# Reset the row names of the combined data frame
+rownames(metadata_df) <- NULL
+```
+

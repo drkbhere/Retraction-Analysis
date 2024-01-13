@@ -1,0 +1,1428 @@
+---
+title: "elephant_in_the_room"
+output:
+  pdf_document: default
+  html_notebook: default
+  word_document: default
+---
+
+## Basic Operations before stating the analysis
+
+Loading the necessary packages for the project
+```{r}
+library(tidyverse) # Loads ggplot2, dplyr, tidyr, readr, purrr, tibble, and stringr
+library(readxl)    # For reading Excel files
+library(rvest)     # For web scraping
+library(httr)      # For working with HTTP
+library(rcrossref) # For using CrossRef's API
+library(janitor)   # For cleaning data
+library(reshape2)  # For reshaping data
+library(igraph)    # For graphing
+library(ggraph)    # For graphing
+library(scales)    # For graphing
+library(lubridate) # For time series work
+library(gridExtra) # For Grid making
+```
+
+Loading the data-set sourced from Retraction Watch on 24-Dec-2023
+```{r}
+data<- read.csv("retraction_watch.csv")
+```
+
+Doing some wrangling of the data
+```{r}
+# Convert dates to POSIX format for the pupose of computation
+data$OriginalPaperDate <- as.POSIXct(data$OriginalPaperDate, format = "%m/%d/%Y %H:%M")
+data$RetractionDate <- as.POSIXct(data$RetractionDate, format = "%m/%d/%Y %H:%M")
+
+# Compute the difference in months
+data$DurationInMonths <- interval(start = data$OriginalPaperDate, end = data$RetractionDate) / months(1)
+
+# Extract year from RetractionDate
+data$RetractionYear <- year(data$RetractionDate)
+
+#Creating Clean names
+data<- data %>%
+  clean_names()
+```
+
+Creating two separate subsets now - one for business related, and one for non business
+```{r}
+# Define business-related subjects
+business_subjects <- c("Business - Management", 
+                       "Business - Economics", 
+                       "Business - Marketing", 
+                       "Business - General", 
+                       "Business - Manufacturing", 
+                       "Business - Accounting")
+
+# Create a single pattern string for matching
+pattern <- paste(business_subjects, collapse = "|")
+
+# This is the Business related subjects
+data_business <- data %>%
+  filter(str_detect(subject, pattern))
+
+# This is the Non Business related subjects
+data_nonbusiness <- data %>%
+  filter(!str_detect(subject, pattern))
+
+data_temp<- data
+```
+
+Creating a set of correlation matrices
+
+For the non business data set
+```{r}
+# Step 1: Split the 'reason' field into individual reasons and remove the '+' prefix
+reasons_list <- strsplit(gsub("^\\+", "", data_business$reason), ";")
+
+# Step 2: Identify unique reasons
+unique_reasons <- unique(unlist(reasons_list))
+
+# Step 3: Create dummy variables for each unique reason
+for(reason in unique_reasons) {
+  data_business[[reason]] <- sapply(reasons_list, function(x) as.integer(reason %in% x))
+}
+
+# Select only dummy variables (and any other numeric variables you want to include)
+numeric_data <- data_business[, sapply(data_business, is.numeric)]
+
+# Compute the correlation matrix for numeric data
+cor_matrix <- cor(numeric_data)
+
+# Melt the correlation matrix for visualization
+melted_cor_matrix <- reshape2::melt(cor_matrix)
+
+# Define a threshold for displaying text
+threshold <- 0.5
+
+# Plot the correlation matrix
+ggplot(data = melted_cor_matrix, aes(x=Var1, y=Var2, fill=value)) +
+    geom_tile() +
+    geom_text(aes(label = ifelse(abs(value) > threshold, round(value, 2), '')), color = "black", size = 2.5) +
+    scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                         midpoint = 0, limit = c(-1,1), space = "Lab", 
+                         name="Pearson\nCorrelation") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 4),
+          axis.text.y = element_text(size = 6),
+          axis.title = element_blank()) +
+    coord_fixed() # Ensure square cells 
+```
+
+Condensing the co-plot with my own logic, for the business dataset
+```{r}
+# Define the patterns for each category
+patterns <- list(
+  Intellectual_Property_Violations = c("Plagiarism", "Duplication", "Euphemisms for Plagiarism", "False/Forged Authorship"),
+  Research_Integrity_and_Quality_Issues = c("Not Reproducible", "Unreliable Results", "Error in Text", "Error in Analyses", "Error in Methods", "Error in Data", "Error in Results", "Fabrication", "Falsification", "Ethical Violations", "Issues About Data"),
+  Peer_Review_and_Editorial_Concerns = c("Fake Peer Review", "Rogue Editor", "Investigation by Journal/Publisher", "Error by Journal/Publisher", "Objections by Author"),
+  Policy_and_Legal_Concerns = c("Breach of Policy", "Issues about Referencing", "Legal Reasons", "Lack of Approval"),
+  Publication_and_Communication_Issues = c("Withdrawal", "Limited or No Information", "Notice - Lack of", "Author Unresponsive", "Update of Prior Notice"),
+  Investigations_and_Actions = c("Investigation by Third Party", "Doing the Right Thing"),
+  Miscellaneous_Issues = c("Date of Retraction", "Randomly Generated Content", "Original Data not Provided", "Concerns About Image")
+)
+
+# Function to create dummy variables for categories based on the presence of certain patterns
+create_dummy_vars <- function(df, patterns) {
+  for (category in names(patterns)) {
+    pattern <- patterns[[category]]
+    df[[category]] <- as.integer(sapply(df$reason, function(x) {
+      any(sapply(pattern, function(y) str_detect(x, regex(y, ignore_case = TRUE))))
+    }))
+  }
+  return(df)
+}
+
+# Apply the function to the data frame
+data_business <- create_dummy_vars(data_business, patterns)
+
+# Ensure these columns exist in your data_business dataframe
+selected_columns <- c("Intellectual_Property_Violations", "Research_Integrity_and_Quality_Issues", 
+                      "Peer_Review_and_Editorial_Concerns", "Policy_and_Legal_Concerns", 
+                      "Publication_and_Communication_Issues", "Investigations_and_Actions", 
+                      "Miscellaneous_Issues")
+
+# Check if all selected columns are present in data_business
+if(all(selected_columns %in% names(data_business))) {
+    # Select only the specified dummy variable columns
+    dummy_data <- data_business[, selected_columns]
+
+    # Calculate the correlation matrix
+    cor_matrix <- cor(dummy_data, use = "complete.obs") # use complete.obs to handle NA values
+
+    # Melt the correlation matrix for visualization
+    melted_cor_matrix <- reshape2::melt(cor_matrix)
+
+    # Plot the correlation matrix with numbers
+    ggplot(data = melted_cor_matrix, aes(x=Var1, y=Var2, fill=value)) +
+        geom_tile() +
+        geom_text(aes(label = round(value, 2)), color = "black", size = 3) +
+        scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                             midpoint = 0, limit = c(-1,1), space = "Lab", 
+                             name="Pearson\nCorrelation") +
+        theme_minimal() +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1),
+              axis.title = element_blank())
+
+} else {
+    stop("Not all specified columns exist in the dataframe.")
+}
+
+```
+
+Condensing the co-plot with my own logic, for the non-business dataset
+```{r}
+# Apply the function to the data_nonbusiness dataframe
+data_nonbusiness <- create_dummy_vars(data_nonbusiness, patterns)
+
+# Ensure these columns exist in your data_nonbusiness dataframe
+selected_columns <- c("Intellectual_Property_Violations", "Research_Integrity_and_Quality_Issues", 
+                      "Peer_Review_and_Editorial_Concerns", "Policy_and_Legal_Concerns", 
+                      "Publication_and_Communication_Issues", "Investigations_and_Actions", 
+                      "Miscellaneous_Issues")
+
+# Check if all selected columns are present in data_nonbusiness
+if(all(selected_columns %in% names(data_nonbusiness))) {
+    # Select only the specified dummy variable columns
+    dummy_data <- data_nonbusiness[, selected_columns]
+
+    # Calculate the correlation matrix
+    cor_matrix <- cor(dummy_data, use = "complete.obs") # use complete.obs to handle NA values
+
+    # Melt the correlation matrix for visualization
+    melted_cor_matrix <- reshape2::melt(cor_matrix)
+
+    # Plot the correlation matrix with numbers
+    ggplot(data = melted_cor_matrix, aes(x=Var1, y=Var2, fill=value)) +
+        geom_tile() +
+        geom_text(aes(label = round(value, 2)), color = "black", size = 3) +
+        scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                             midpoint = 0, limit = c(-1,1), space = "Lab", 
+                             name="Pearson\nCorrelation") +
+        theme_minimal() +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1),
+              axis.title = element_blank()) 
+
+} else {
+    stop("Not all specified columns exist in the dataframe.")
+} 
+```
+
+
+
+For the business dataset
+```{r}
+# Step 1: Split the 'reason' field into individual reasons and remove the '+' prefix
+reasons_list <- strsplit(gsub("^\\+", "", data_nonbusiness$reason), ";")
+
+# Step 2: Identify unique reasons
+unique_reasons <- unique(unlist(reasons_list))
+
+# Step 3: Create dummy variables for each unique reason
+for(reason in unique_reasons) {
+  data_nonbusiness[[reason]] <- sapply(reasons_list, function(x) as.integer(reason %in% x))
+}
+
+# Select only dummy variables (and any other numeric variables you want to include)
+numeric_data <- data_nonbusiness[, sapply(data_nonbusiness, is.numeric)]
+
+# Compute the correlation matrix for numeric data
+cor_matrix <- cor(numeric_data)
+
+# Melt the correlation matrix for visualization
+melted_cor_matrix <- reshape2::melt(cor_matrix)
+
+# Define a threshold for displaying text
+threshold <- 0.5
+
+# Plot the correlation matrix
+ggplot(data = melted_cor_matrix, aes(x=Var1, y=Var2, fill=value)) +
+    geom_tile() +
+    geom_text(aes(label = ifelse(abs(value) > threshold, round(value, 2), '')), color = "black", size = 2.5) +
+    scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                         midpoint = 0, limit = c(-1,1), space = "Lab", 
+                         name="Pearson\nCorrelation") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 4),
+          axis.text.y = element_text(size = 6),
+          axis.title = element_blank()) +
+    coord_fixed() # Ensure square cells
+```
+
+Trying to plot how retractions have been in Non Management disciplines
+```{r}
+# Prepare data
+yearly_data <- data_nonbusiness %>%
+  group_by(retraction_year) %>%
+  summarize(average_duration = mean(duration_in_months, na.rm = TRUE),
+            retraction_count = n())
+
+# Normalize the RetractionCount for better visualization
+max_duration <- max(yearly_data$average_duration, na.rm = TRUE)
+max_count <- max(yearly_data$retraction_count, na.rm = TRUE)
+yearly_data$NormalizedCount <- yearly_data$retraction_count / max_count * max_duration
+
+retractions_nonmanagement<- ggplot(yearly_data, aes(x = retraction_year)) +
+  geom_line(aes(y = average_duration, group = 1), color = "blue") +
+  geom_point(aes(y = average_duration), color = "blue") +
+  geom_bar(aes(y = NormalizedCount), stat = "identity", fill = "red", alpha = 0.5) +
+    scale_x_continuous(limits = c(1990, NA)) +  # Limiting x-axis to start from 1970+
+
+  scale_y_continuous(name = "Average Duration in Months", 
+                     sec.axis = sec_axis(~ . * max_count / max_duration, 
+                                         name = "Number of Retractions")) +
+  labs(title = "Retractions over the Years: Duration and Count (Non Management Disciplines)",
+       x = "Retraction Year") +
+  theme_minimal()
+```
+
+Trying to plot how retractions have been in Management disciplines
+
+```{r}
+# Prepare data
+yearly_data <- data_business %>%
+  group_by(retraction_year) %>%
+  summarize(average_duration = mean(duration_in_months, na.rm = TRUE),
+            retraction_count = n())
+
+# Normalize the RetractionCount for better visualization
+max_duration <- max(yearly_data$average_duration, na.rm = TRUE)
+max_count <- max(yearly_data$retraction_count, na.rm = TRUE)
+yearly_data$NormalizedCount <- yearly_data$retraction_count / max_count * max_duration
+
+retractions_management<- ggplot(yearly_data, aes(x = retraction_year)) +
+  geom_line(aes(y = average_duration, group = 1), color = "blue") +
+  geom_point(aes(y = average_duration), color = "blue") +
+  geom_bar(aes(y = NormalizedCount), stat = "identity", fill = "red", alpha = 0.5) +
+    scale_x_continuous(limits = c(1990, NA)) +  # Limiting x-axis to start from 1970+
+
+  scale_y_continuous(name = "Average Duration in Months", 
+                     sec.axis = sec_axis(~ . * max_count / max_duration, 
+                                         name = "Number of Retractions")) +
+  labs(title = "Retractions over the Years: Duration and Count (Management Disciplines)",
+       x = "Retraction Year") +
+  theme_minimal()
+```
+
+Displaying the plot
+```{r}
+grid.arrange(retractions_management, retractions_nonmanagement, ncol = 1)
+```
+
+Trying to understand the distribution of subjects now. 
+
+Distribution of Subjects - Non Management Subjects
+```{r}
+# Separate the subjects into individual rows
+data_subjects <- data_nonbusiness %>%
+                 separate_rows(subject, sep = ";\\s*")
+
+# Count the occurrences of each subject
+subject_count <- data_subjects %>%
+                 count(subject, sort = TRUE)
+
+# Create a horizontal bar chart
+ggplot(subject_count, aes(y = reorder(subject, n), x = n)) +
+    geom_bar(stat = "identity", position = "dodge") +
+    theme(axis.text.y = element_text(size = 4)) +
+    labs(y = "Subject", x = "Count", title = "Distribution of Subjects - Non Management")
+```
+
+```{r}
+# Rename the subject to the broader theme that's written in the brackets
+subject_count <- subject_count %>%
+  mutate(subject = str_match(subject, "\\(([^)]+)\\)")[,2])
+
+# Remove NA values that might have been introduced if there were subjects without brackets
+subject_count <- subject_count %>% 
+  filter(!is.na(subject))
+
+# Create a horizontal bar chart
+ggplot(subject_count, aes(y = reorder(subject, n), x = n)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  theme(axis.text.y = element_text(size = 6)) +
+  labs(y = "Subject", x = "Count", title = "Distribution of Subjects - Non Management Subjects")
+```
+
+Distribution of Subjects -  Management Subjects
+```{r}
+# Separate the subjects into individual rows
+data_subjects <- data_business %>%
+                 separate_rows(subject, sep = ";\\s*")
+
+# Count the occurrences of each subject
+subject_count <- data_subjects %>%
+                 count(subject, sort = TRUE)
+
+# Create a horizontal bar chart
+ggplot(subject_count, aes(y = reorder(subject, n), x = n)) +
+    geom_bar(stat = "identity", position = "dodge") +
+    theme(axis.text.y = element_text(size = 4)) +
+    labs(y = "Subject", x = "Count", title = "Distribution of Subjects - Management")
+```
+
+```{r}
+# Rename the subject to the broader theme that's written in the brackets
+subject_count <- subject_count %>%
+  mutate(subject = str_match(subject, "\\(([^)]+)\\)")[,2])
+
+# Remove NA values that might have been introduced if there were subjects without brackets
+subject_count <- subject_count %>% 
+  filter(!is.na(subject))
+
+# Create a horizontal bar chart
+ggplot(subject_count, aes(y = reorder(subject, n), x = n)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  theme(axis.text.y = element_text(size = 6)) +
+  labs(y = "Subject", x = "Count", title = "Distribution of Subjects")
+```
+Note: You see that there are other non management areas also linked here. That's because a lot of the papers have also been listed as science, environment and sociology, etc. 
+
+
+Trying to understand the distribution of countries now
+```{r}
+# Separate the subjects into individual rows
+data_country <- data_nonbusiness %>%
+                 separate_rows(country, sep = ";\\s*")
+
+# Count the occurrences of each subject
+country_count <- data_country %>%
+                 count(country, sort = TRUE)
+
+# Create a horizontal bar chart
+ggplot(country_count, aes(y = reorder(country, n), x = n)) +
+    geom_bar(stat = "identity", position = "dodge") +
+    theme(axis.text.y = element_text(size = 4)) +
+    labs(y = "Country", x = "Count", title = "Distribution of Countries - Non Management")
+
+```
+
+
+```{r}
+length(unique(country_count$country))
+```
+There appear to be authors from 173 countries participating here. 
+
+```{r}
+# Separate the subjects into individual rows
+data_country <- data_business %>%
+                 separate_rows(country, sep = ";\\s*")
+
+# Count the occurrences of each subject
+country_count <- data_country %>%
+                 count(country, sort = TRUE)
+
+# Create a horizontal bar chart
+ggplot(country_count, aes(y = reorder(country, n), x = n)) +
+    geom_bar(stat = "identity", position = "dodge") +
+    theme(axis.text.y = element_text(size = 4)) +
+    labs(y = "Country", x = "Count", title = "Distribution of Countries - Non Management")
+
+
+```
+
+```{r}
+length(unique(country_count$country))
+```
+There appear to be authors from 94 countries participating here. 
+
+Trying to understand the distribution of institutions now
+```{r}
+# Separate the subjects into individual rows
+data_institution <- data_nonbusiness %>%
+                 separate_rows(institution, sep = ";\\s*")
+
+# Count the occurrences of each subject
+institution_count <- data_institution %>%
+                 count(institution, sort = TRUE)
+
+length(unique(institution_count$institution))
+```
+There appear to be authors from 77610 institutions participated here. 
+
+
+```{r}
+# Separate the subjects into individual rows
+data_institution <- data_business %>%
+                 separate_rows(institution, sep = ";\\s*")
+
+# Count the occurrences of each subject
+institution_count <- data_institution %>%
+                 count(institution, sort = TRUE)
+
+length(unique(institution_count$institution))
+```
+There appear to be authors from 8240 institutions participated here. 
+
+
+Checking on repeat offenders
+```{r}
+# Separate the subjects into individual rows
+data_author <- data_nonbusiness %>%
+                 separate_rows(author, sep = ";\\s*")
+
+# Count the occurrences of each subject
+author_count <- data_author %>%
+                 count(author, sort = TRUE)
+
+author_count_nonbusiness <-author_count
+
+length(unique(author_count$author))
+```
+There are about 1,22,573 unique authors in the non business dataset.
+
+```{r}
+length(unique(author_count$author))/length(data_nonbusiness$record_id)
+```
+There have on average been, 2.85 authors per paper. 
+
+```{r}
+length(unique(author_count$author))/length(data_nonbusiness$record_id)
+```
+
+```{r}
+# Step 1: Add a column with the number of authors per publication
+data_nonbusiness <- data_nonbusiness %>%
+  mutate(
+    num_authors = sapply(strsplit(as.character(author), ";"), length),
+    publication_year = year(original_paper_date)
+  )
+
+# Step 2: Group by publication year and calculate the average number of authors
+average_authors_per_year <- data_nonbusiness %>%
+  group_by(publication_year) %>%
+  summarise(average_authors = mean(num_authors, na.rm = TRUE))
+
+# Plotting the average number of authors per year
+ggplot(average_authors_per_year, aes(x = publication_year, y = average_authors)) +
+  geom_line() +  # Line plot
+  geom_point() + # Adding points to each year
+  theme_minimal() +
+  labs(
+    title = "Average Number of Authors per Publication Over Years",
+    x = "Publication Year",
+    y = "Average Number of Authors"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1) # Adjusting x-axis labels for better readability
+  )+ 
+    scale_x_continuous(limits = c(1990, max(average_authors_per_year$publication_year))) # Limiting x-axis from 1980 onward
+
+
+```
+
+
+```{r}
+# Step 1: Add a column with the number of authors per publication
+data_business <- data_business %>%
+  mutate(
+    num_authors = sapply(strsplit(as.character(author), ";"), length),
+    publication_year = year(original_paper_date)
+  )
+
+# Step 2: Group by publication year and calculate the average number of authors
+average_authors_per_year <- data_business %>%
+  group_by(publication_year) %>%
+  summarise(average_authors = mean(num_authors, na.rm = TRUE))
+
+# Plotting the average number of authors per year
+ggplot(average_authors_per_year, aes(x = publication_year, y = average_authors)) +
+  geom_line() +  # Line plot
+  geom_point() + # Adding points to each year
+  theme_minimal() +
+  labs(
+    title = "Average Number of Authors per Publication Over Years",
+    x = "Publication Year",
+    y = "Average Number of Authors"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1) # Adjusting x-axis labels for better readability
+  )+ 
+    scale_x_continuous(limits = c(1990, max(average_authors_per_year$publication_year))) # Limiting x-axis from 1980 onward
+
+
+```
+
+Preparing a joint plot
+```{r}
+# Prepare nonbusiness data
+data_nonbusiness <- data_nonbusiness %>%
+  mutate(
+    num_authors = sapply(strsplit(as.character(author), ";"), length),
+    publication_year = year(original_paper_date),
+    type = "Nonbusiness"
+  )
+
+# Prepare business data
+data_business <- data_business %>%
+  mutate(
+    num_authors = sapply(strsplit(as.character(author), ";"), length),
+    publication_year = year(original_paper_date),
+    type = "Business"
+  )
+
+# Combine the datasets
+combined_data <- bind_rows(data_nonbusiness, data_business)
+
+# Group by publication year and type, then calculate the average number of authors
+average_authors_per_year_type <- combined_data %>%
+  group_by(publication_year, type) %>%
+  summarise(average_authors = mean(num_authors, na.rm = TRUE))
+
+# Plotting the average number of authors per year for both types
+ggplot(average_authors_per_year_type, aes(x = publication_year, y = average_authors, color = type)) +
+  geom_line() +  # Line plot
+  geom_point() + # Adding points to each year
+  theme_minimal() +
+  labs(
+    title = "Average Number of Authors per Retracted Publication Over Years",
+    x = "Publication Year",
+    y = "Average Number of Authors"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1) # Adjusting x-axis labels for better readability
+  )+ 
+  scale_x_continuous(limits = c(1990, max(average_authors_per_year_type$publication_year))) #
+
+```
+
+Doing something similar for number of institutions
+```{r}
+
+# Prepare nonbusiness data with the number of institutions
+data_nonbusiness <- data_nonbusiness %>%
+  mutate(
+    num_institutions = sapply(strsplit(as.character(institution), ";"), length),  # Count institutions
+    publication_year = year(original_paper_date),
+    type = "Nonbusiness"
+  )
+
+# Prepare business data with the number of institutions
+data_business <- data_business %>%
+  mutate(
+    num_institutions = sapply(strsplit(as.character(institution), ";"), length),  # Count institutions
+    publication_year = year(original_paper_date),
+    type = "Business"
+  )
+
+# Combine the datasets
+combined_data <- bind_rows(data_nonbusiness, data_business)
+
+# Group by publication year and type, then calculate the average number of institutions
+average_institutions_per_year_type <- combined_data %>%
+  group_by(publication_year, type) %>%
+  summarise(average_institutions = mean(num_institutions, na.rm = TRUE))
+
+# Plotting the average number of institutions per year for both types
+ggplot(average_institutions_per_year_type, aes(x = publication_year, y = average_institutions, color = type)) +
+  geom_line() +  # Line plot
+  geom_point() + # Adding points to each year
+  theme_minimal() +
+  labs(
+    title = "Average Number of Institutions per Retracted Publication Over Years",
+    x = "Publication Year",
+    y = "Average Number of Institutions"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1) # Adjusting x-axis labels for better readability
+  )+ 
+  scale_x_continuous(limits = c(1990, max(average_institutions_per_year_type$publication_year))) # Limiting x-axis
+
+```
+
+```{r}
+# Prepare nonbusiness data with the number of countries
+data_nonbusiness <- data_nonbusiness %>%
+  mutate(
+    num_countries = sapply(strsplit(as.character(country), ";"), length),  # Count countries
+    publication_year = year(original_paper_date),
+    type = "Nonbusiness"
+  )
+
+# Prepare business data with the number of countries
+data_business <- data_business %>%
+  mutate(
+    num_countries = sapply(strsplit(as.character(country), ";"), length),  # Count countries
+    publication_year = year(original_paper_date),
+    type = "Business"
+  )
+
+# Combine the datasets
+combined_data <- bind_rows(data_nonbusiness, data_business)
+
+# Group by publication year and type, then calculate the average number of countries
+average_countries_per_year_type <- combined_data %>%
+  group_by(publication_year, type) %>%
+  summarise(average_countries = mean(num_countries, na.rm = TRUE))
+
+# Plotting the average number of countries per year for both types
+ggplot(average_countries_per_year_type, aes(x = publication_year, y = average_countries, color = type)) +
+  geom_line() +  # Line plot
+  geom_point() + # Adding points to each year
+  theme_minimal() +
+  labs(
+    title = "Average Number of Countries per Retracted Publication Over Years",
+    x = "Publication Year",
+    y = "Average Number of Countries"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1) # Adjusting x-axis labels for better readability
+  )+ 
+  scale_x_continuous(limits = c(1990, max(average_countries_per_year_type$publication_year))) + 
+    scale_y_continuous(limits = c(1, 1.5))
+```
+
+
+
+What is pending: 
+1. Eigen vector centrality
+2. Cor plots for reasons?
+3. Can I put the retractions data on a map to show where the retractions have been coming from?
+4. Time series clustering?
+
+
+
+
+```{r}
+# Separate the authors and associate them with broader subjects and years
+author_data <- data_temp %>%
+  mutate(publication_year = year(original_paper_date),
+         broader_subject = str_extract(subject, "\\(([^)]+)\\)")) %>%
+  select(author, broader_subject, publication_year) %>%
+  separate_rows(author, sep = ";\\s*") %>%
+  filter(broader_subject != "" & !is.na(broader_subject))
+
+# Assuming each row in author_data is unique to an article, if not, ensure uniqueness
+author_data <- author_data %>% distinct()
+
+```
+
+
+
+```{r}
+# Create a data frame for edges (co-authorships)
+edges <- author_data %>%
+  group_by(publication_year) %>%
+  summarise(authors = list(unique(author))) %>%
+  filter(length(authors) > 1) %>%
+  unnest(authors) %>%
+  combn(2, simplify = FALSE) %>%
+  lapply(function(pair) data.frame(from = pair[1], to = pair[2])) %>%
+  bind_rows()
+
+# Create a graph from the edge list
+author_graph <- graph_from_data_frame(edges, directed = FALSE)
+
+```
+
+
+
+```{r}
+eig_centrality <- eigen_centrality(author_graph)$vector
+names(eig_centrality) <- V(author_graph)$name
+
+```
+
+
+```{r}
+centrality_subjects <- author_data %>%
+  distinct(author, broader_subject) %>%
+  mutate(eig_centrality = eig_centrality[author])
+
+# Aggregating centrality scores by broader subject
+subject_centrality <- centrality_subjects %>%
+  group_by(broader_subject) %>%
+  summarise(avg_centrality = mean(eig_centrality, na.rm = TRUE))
+
+```
+
+```{r}
+library(ggplot2)
+
+ggplot(subject_centrality, aes(x = reorder(broader_subject, avg_centrality), y = avg_centrality)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(title = "Average Eigenvector Centrality by Broader Subject", x = "Broader Subject", y = "Average Centrality") +
+  coord_flip()  # For horizontal bars
+
+```
+
+Trying something random with time dimension
+
+```{r}
+author_data <- data_temp %>%
+  mutate(
+    publication_year = year(original_paper_date),
+    broader_subject = str_extract(subject, "\\(([^)]+)\\)")
+  ) %>%
+  select(record_id, author, broader_subject, publication_year) %>%
+  separate_rows(author, sep = ";\\s*") %>%
+  filter(broader_subject != "" & !is.na(broader_subject))
+
+
+# Initialize a list to store centrality data for each year
+yearly_centrality_data <- list()
+
+unique_years <- unique(author_data$publication_year)
+
+for(year in unique_years) {
+    year_data <- author_data %>% filter(publication_year == year)
+
+    edges <- year_data %>%
+        group_by(record_id) %>%
+        summarise(authors = list(unique(author))) %>%
+        filter(length(authors) > 1) %>%
+        unnest(authors) %>%
+        combn(2, simplify = FALSE) %>%
+        lapply(function(pair) data.frame(from = pair[1], to = pair[2])) %>%
+        bind_rows()
+
+    graph <- graph_from_data_frame(edges, directed = FALSE)
+
+    centrality <- eigen_centrality(graph)$vector
+    names(centrality) <- V(graph)$name
+
+    yearly_centrality_data[[as.character(year)]] <- centrality
+}
+
+
+```
+
+```{r}
+centrality_subject_year <- author_data %>%
+    mutate(eig_centrality = map2(publication_year, author, ~yearly_centrality_data[[as.character(.x)]][.y])) %>%
+    unnest(eig_centrality)
+```
+
+```{r}
+# Aggregate centrality scores
+subject_year_centrality <- centrality_subject_year %>%
+    group_by(broader_subject, publication_year) %>%
+    summarise(avg_centrality = mean(eig_centrality, na.rm = TRUE))
+
+ggplot(subject_year_centrality, aes(x = publication_year, y = avg_centrality, group = broader_subject, color = broader_subject)) +
+    geom_line() +
+    scale_x_continuous(limits = c(1990, max(subject_year_centrality$publication_year))) +  # Set x-axis limits
+    theme_minimal() +
+    labs(title = "Eigenvector Centrality Over Time by Broader Subject",
+         x = "Year",
+         y = "Average Centrality") +
+    theme(legend.position = "bottom")
+
+
+```
+
+Questions to think about
+3. Are there some areas/subjects more prone to retractions?
+
+
+1. Are there retractions in higher quality journals? Is this problem just there in low quality journals?
+
+Finding a solution to this now: 
+
+Getting the ABDC dataset
+```{r}
+abdc<- read.csv("abdc.csv")
+
+#Filtering to latest abdc rankings only from 2022
+abdc<- abdc %>%
+  filter(
+    year == 2022
+  )
+```
+
+```{r}
+# Merging the two datasets
+data_business_temp <- inner_join(data_business, abdc)
+
+#getting the journals that are not listed- complementart set
+journals_not_listed <- data_business$journal[!data_business$journal %in% data_business_temp$journal]
+journals_not_listed_df <- data.frame(journal = journals_not_listed)
+```
+
+Checking distribution
+```{r}
+# Plot the histogram of reasons
+ggplot(data_business_temp, aes(x = abdc_ranking)) +
+  geom_histogram(stat = "count")
+```
+It appears that a lot of A*s still get retractions. 
+It is fully possible that the A*s and As have a much better policy to police the retractions. 
+
+Just looking at reasons for the retractions
+```{r}
+library(dplyr)
+
+# Identify the reason columns
+reason_columns <- grep("^\\+", names(data_business_temp), value = TRUE)
+
+# Summarize the data to get counts of each reason for each abdc_ranking
+top_reasons <- data_business_temp %>%
+  select(abdc_ranking, all_of(reason_columns)) %>%
+  gather(key = "reason", value = "count", -abdc_ranking) %>%
+  group_by(abdc_ranking, reason) %>%
+  summarise(total = sum(count)) %>%
+  arrange(abdc_ranking, desc(total)) %>%
+  group_by(abdc_ranking) %>%
+  filter(rank(-total) <= 5)  # Select top 5 reasons for each abdc_ranking
+
+# View the results
+print(top_reasons)
+```
+These results are interesting and team needs to see
+
+One reason we are seeing a lot of journals not listed I think is because a lot of them are engineering ones that also list as management. There are also those that are not journal articles but conference papers, and other scholarly worlds. 
+
+
+2. Are inter disciplinary works prone to more retractions
+```{r}
+# Step 1: Add a column with the number of disciplines per publication
+
+data_nonbusiness <- data_nonbusiness %>%
+  mutate(
+    num_subjects = sapply(strsplit(as.character(subject), ";"), length),
+    num_unique_disciplines = sapply(
+      strsplit(as.character(subject), ";"),
+      function(subjects) {
+        # Extract disciplines
+        disciplines <- unlist(lapply(subjects, function(x) str_extract_all(x, "\\(([^()]*)\\)")))
+        # Flatten the list and remove NA
+        disciplines <- unlist(disciplines)
+        disciplines <- disciplines[!is.na(disciplines)]
+        # Count unique disciplines
+        length(unique(disciplines))
+      }
+    )
+  )
+
+# mirroring
+data_business <- data_business %>%
+  mutate(
+    num_subjects = sapply(strsplit(as.character(subject), ";"), length),
+    num_unique_disciplines = sapply(
+      strsplit(as.character(subject), ";"),
+      function(subjects) {
+        # Extract disciplines
+        disciplines <- unlist(lapply(subjects, function(x) str_extract_all(x, "\\(([^()]*)\\)")))
+        # Flatten the list and remove NA
+        disciplines <- unlist(disciplines)
+        disciplines <- disciplines[!is.na(disciplines)]
+        # Count unique disciplines
+        length(unique(disciplines))
+      }
+    )
+  )
+```
+
+Retractions Over Time by Number of Disciplines - Non Business
+```{r}
+# Aggregate data
+retractions_over_time <- data_nonbusiness %>%
+  group_by(publication_year, num_unique_disciplines) %>%
+  summarise(retractions = n(), .groups = 'drop')
+
+# Create the plot
+ggplot(retractions_over_time, aes(x = publication_year, y = retractions, color = as.factor(num_unique_disciplines))) +
+  geom_line() +
+  labs(title = "Retractions Over Time by Number of Disciplines - Non Business",
+       x = "Publication Year",
+       y = "Number of Retractions",
+       color = "Number of Disciplines") +
+  theme_minimal() +
+    scale_x_continuous(limits = c(1990, 2021)) #
+
+
+```
+
+
+
+Retractions Over Time by Number of Disciplines - Business
+```{r}
+retractions_over_time <- data_business %>%
+  group_by(publication_year, num_unique_disciplines) %>%
+  summarise(retractions = n(), .groups = 'drop')
+
+# Create the plot
+ggplot(retractions_over_time, aes(x = publication_year, y = retractions, color = as.factor(num_unique_disciplines))) +
+  geom_line() +
+  labs(title = "Retractions Over Time by Number of Disciplines - Business",
+       x = "Publication Year",
+       y = "Number of Retractions",
+       color = "Number of Disciplines") +
+  theme_minimal() +
+    scale_x_continuous(limits = c(1990, 2021)) #
+
+
+```
+
+Retractions Over Time by Number of Subjects - Non Business
+```{r}
+# Aggregate data
+retractions_over_time <- data_nonbusiness %>%
+  group_by(publication_year, num_subjects) %>%
+  summarise(retractions = n(), .groups = 'drop')
+
+# Create the plot
+ggplot(retractions_over_time, aes(x = publication_year, y = retractions, color = as.factor(num_subjects))) +
+  geom_line() +
+  labs(title = "Retractions Over Time by Number of Subjects - Non Business",
+       x = "Publication Year",
+       y = "Number of Retractions",
+       color = "Number of Subjects") +
+  theme_minimal() +
+    scale_x_continuous(limits = c(2008, 2021)) #
+
+
+```
+
+
+
+Retractions Over Time by Number of Subjects - Business
+```{r}
+retractions_over_time <- data_business %>%
+  group_by(publication_year, num_subjects) %>%
+  summarise(retractions = n(), .groups = 'drop')
+
+# Create the plot
+ggplot(retractions_over_time, aes(x = publication_year, y = retractions, color = as.factor(num_subjects))) +
+  geom_line() +
+  labs(title = "Retractions Over Time by Number of Subjects - Business",
+       x = "Publication Year",
+       y = "Number of Retractions",
+       color = "Number of Subjects") +
+  theme_minimal() +
+    scale_x_continuous(limits = c(2008, 2021)) #
+
+
+
+```
+We can't really comment on this since we do not have the overall non retracted data. 
+But I think we can safely say that number of papers listed in single category would be >> than number of papers listed in multiple categories .. 
+
+so in % terms, the 2 cat thing would be more pronounced. Same with 3,4,5, etc. 
+
+Retractions Over Time by Number of Authors - Non Business
+
+```{r}
+# Aggregate data
+retractions_over_time_authors <- data_nonbusiness %>%
+  group_by(publication_year, num_authors) %>%
+  summarise(retractions = n(), .groups = 'drop')
+
+# Create the plot
+ggplot(retractions_over_time_authors, aes(x = publication_year, y = retractions, color = as.factor(num_authors))) +
+  geom_line() +
+  labs(title = "Retractions Over Time by Number of Authors - Non Business",
+       x = "Publication Year",
+       y = "Number of Retractions",
+       color = "Number of Authors") +
+  theme_minimal() + 
+      scale_x_continuous(limits = c(2008, 2021)) #
+
+
+```
+  
+Retractions Over Time by Number of Authors - Business
+```{r}
+# Aggregate data
+retractions_over_time_authors <- data_business %>%
+  group_by(publication_year, num_authors) %>%
+  summarise(retractions = n(), .groups = 'drop')
+
+# Create the plot
+ggplot(retractions_over_time_authors, aes(x = publication_year, y = retractions, color = as.factor(num_authors))) +
+  geom_line() +
+  labs(title = "Retractions Over Time by Number of Authors - Business",
+       x = "Publication Year",
+       y = "Number of Retractions",
+       color = "Number of Authors") +
+  theme_minimal() + 
+      scale_x_continuous(limits = c(2008, 2021)) #
+
+```
+
+
+Retractions Over Time by Number of Institutions - Non Business
+```{r}
+# Aggregate data
+retractions_over_time_institutions <- data_nonbusiness %>%
+  group_by(publication_year, num_institutions) %>%
+  summarise(retractions = n(), .groups = 'drop')
+
+# Create the plot
+ggplot(retractions_over_time_institutions, aes(x = publication_year, y = retractions, color = as.factor(num_institutions))) +
+  geom_line() +
+  labs(title = "Retractions Over Time by Number of Institutions - Non Business",
+       x = "Publication Year",
+       y = "Number of Retractions",
+       color = "Number of Institutions") +
+  theme_minimal() +
+        scale_x_continuous(limits = c(2008, 2021)) #
+
+```
+
+Retractions Over Time by Number of Institutions - Business
+```{r}
+# Aggregate data
+retractions_over_time_institutions <- data_business %>%
+  group_by(publication_year, num_institutions) %>%
+  summarise(retractions = n(), .groups = 'drop')
+
+# Create the plot
+ggplot(retractions_over_time_institutions, aes(x = publication_year, y = retractions, color = as.factor(num_institutions))) +
+  geom_line() +
+  labs(title = "Retractions Over Time by Number of Institutions - Business",
+       x = "Publication Year",
+       y = "Number of Retractions",
+       color = "Number of Institutions") +
+  theme_minimal() +
+        scale_x_continuous(limits = c(2008, 2021)) #
+
+```
+
+
+
+
+
+
+
+
+Ideas after discussion with Manish on 02-Jan-2024
+
+```{r}
+# Prepare the data
+data_business <- data_business %>%
+  select(subject, record_id) %>%
+  filter(!is.na(subject)) %>%
+  mutate(subject = strsplit(as.character(subject), ";")) %>%
+  unnest(subject) %>%
+  group_by(subject) %>%
+  mutate(freq = n()) %>%
+  ungroup()
+
+
+```
+
+
+
+```{r}
+# Pair subjects with each record_id
+subject_pairs <- data_business %>%
+  select(subject, record_id) %>%
+  group_by(record_id) %>%
+  filter(n() > 1) %>%  # Ensure there are at least two subjects
+  summarise(subject_combinations = list(combn(subject, 2, simplify = FALSE))) %>%
+  ungroup() %>%
+  select(subject_combinations) %>%
+  unnest(subject_combinations)
+
+# Create edges for the network
+edges <- do.call(rbind, subject_pairs$subject_combinations)
+colnames(edges) <- c("Subject1", "Subject2")
+
+# Create the graph
+graph_subjects <- graph_from_data_frame(edges, directed = FALSE)
+
+# Simplify the graph (remove loops and multiple edges)
+graph_subjects <- simplify(graph_subjects)
+
+
+```
+
+
+
+```{r}
+# Basic network analysis
+degree_distribution <- degree(graph_subjects)
+plot(degree_distribution, main = "Degree Distribution of Subject Network", xlab = "Degree", ylab = "Frequency")
+
+```
+
+
+
+```{r}
+# Plot the network
+plot(graph_subjects, vertex.size = degree(graph_subjects), vertex.label.cex = 0.8, vertex.label.color = "blue", main = "Subject Co-occurrence Network")
+
+```
+
+
+
+
+
+
+new
+```{r}
+library(tidyr)
+library(dplyr)
+library(igraph)
+
+# Split the subjects and create a long format
+data_business_long <- data_business %>%
+  mutate(subject = strsplit(as.character(subject), ";")) %>%
+  unnest(subject) %>%
+  group_by(record_id) %>%
+  filter(n() > 1)  # Ensure there are at least two subjects
+
+# Create subject pairs
+subject_pairs <- data_business_long %>%
+  summarise(subject_combinations = combn(unique(subject), 2, simplify = FALSE)) %>%
+  ungroup()
+
+# Convert the list of subject combinations to a data frame
+subject_pairs_flat <- do.call(rbind, subject_pairs$subject_combinations)
+colnames(subject_pairs_flat) <- c("Subject1", "Subject2")
+
+```
+
+```{r}
+# Count the frequency of each co-occurrence
+edges_with_weights <- as.data.frame(subject_pairs_flat) %>%
+  group_by(Subject1, Subject2) %>%
+  summarise(co_occurrence_freq = n()) %>%
+  ungroup()
+
+# Create the graph with weighted edges
+graph_subjects_weighted <- graph_from_data_frame(edges_with_weights, directed = FALSE)
+
+```
+
+
+```{r}
+# Analyze edge weights
+E(graph_subjects_weighted)$weight <- edges_with_weights$co_occurrence_freq
+
+# Calculate strength (weighted degree) of each node
+strength_values <- strength(graph_subjects_weighted)
+
+# Plot strength distribution
+plot(strength_values, main = "Strength Distribution of Subjects", xlab = "Subject", ylab = "Strength")
+
+```
+
+```{r}
+# Plot the network with edge width based on co-occurrence frequency
+plot(graph_subjects_weighted, vertex.size=degree(graph_subjects_weighted), 
+     edge.width=E(graph_subjects_weighted)$weight, 
+     vertex.label.cex=0.7, 
+     main="Subject Co-occurrence Network (Weighted)")
+
+```
+
+
+```{r}
+# Assuming 'graph_subjects_weighted' is your igraph object and it has an attribute 'name' for subjects
+
+# Calculate strength (weighted degree) for each node
+strength_values <- strength(graph_subjects_weighted, weights = E(graph_subjects_weighted)$weight)
+
+# Create a data frame with subject names and their corresponding strength
+subject_strength_df <- data.frame(
+  subject = V(graph_subjects_weighted)$name,
+  strength = strength_values
+)
+
+# Sort the data frame by strength in descending order
+ordered_subjects <- subject_strength_df %>%
+  arrange(desc(strength))
+
+# Identify the subjects with the highest strength
+top_subjects <- head(ordered_subjects, n = 10) # You can adjust 'n' based on how many top subjects you want to inspect
+
+```
+
+
+
+
+
+
+Insti level analysis
+
+```{r}
+data_business<- data_business_temp
+```
+
+```{r}
+library(tidyr)
+library(dplyr)
+library(igraph)
+
+# Assuming data_business is already loaded and has the 'institution' column
+# Split the institutions and create a long format
+data_business_long <- data_business %>%
+  mutate(institution = strsplit(as.character(institution), ";")) %>%
+  unnest(institution) %>%
+  group_by(record_id) %>%
+  filter(n() > 1)  # Ensure there are at least two institutions
+
+# Create institution pairs
+institution_pairs <- data_business_long %>%
+  summarise(institution_combinations = combn(unique(institution), 2, simplify = FALSE)) %>%
+  ungroup()
+
+# Flatten the list of institution combinations and convert to a data frame
+institution_pairs_flat <- do.call(rbind, unname(unlist(institution_pairs$institution_combinations, recursive = FALSE)))
+colnames(institution_pairs_flat) <- c("Institution1", "Institution2")
+
+# Count the frequency of each co-occurrence
+edges_with_weights <- institution_pairs_flat %>%
+  group_by(Institution1, Institution2) %>%
+  summarise(co_occurrence_freq = n(), .groups = 'drop')
+
+# Create the graph with weighted edges
+graph_institutions_weighted <- graph_from_data_frame(edges_with_weights, directed = FALSE)
+
+# Analyze edge weights
+E(graph_institutions_weighted)$weight <- edges_with_weights$co_occurrence_freq
+
+# Calculate strength (weighted degree) for each node
+strength_values <- strength(graph_institutions_weighted, weights = E(graph_institutions_weighted)$weight)
+
+# Create a data frame with institution names and their corresponding strength
+institution_strength_df <- data.frame(
+  institution = V(graph_institutions_weighted)$name,
+  strength = strength_values
+)
+
+# Sort the data frame by strength in descending order
+ordered_institutions <- institution_strength_df %>%
+  arrange(desc(strength))
+
+# Identify the institutions with the highest strength
+top_institutions <- head(ordered_institutions, n = 10) # Adjust 'n' as needed
+
+```
+
+```{r}
+# Count the frequency of each co-occurrence
+edges_with_weights <- as.data.frame(institution_pairs_flat) %>%
+  group_by(Institution1, Institution2) %>%
+  summarise(co_occurrence_freq = n()) %>%
+  ungroup()
+
+# Create the graph with weighted edges
+graph_institutions_weighted <- graph_from_data_frame(edges_with_weights, directed = FALSE)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Notes to self: 
+
+1. do the same thing for non business
+2. Do like a pre - post analysis. See if we can do a before COPE, after COPE sort of arrangement?
+3. Were the reasons before COPE different from the reasons after cope?
+4. Can do ABDC vs non ABDC comparison of the QAP analysis
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,212 @@
+---
+title: "Lion in the Room"
+output: html_notebook
+---
+
+
+### Loading the necessary packages for the project
+
+```{r}
+library(tidyverse)  # Loads ggplot2, dplyr, tidyr, readr, purrr, tibble, and stringr
+library(readxl)     # For reading Excel files
+library(rvest)      # For web scraping
+library(httr)       # For working with HTTP
+library(rcrossref)  # For using CrossRef's API
+library(janitor)    # For cleaning data
+library(reshape2)   # For reshaping data
+library(igraph)     # For graphing
+library(ggraph)     # For graphing
+library(scales)     # For graphing
+library(lubridate)  # For time series work
+library(gridExtra)  # For Grid making
+library(VennDiagram)# For Venn Diagrams
+library(png)
+library(grid)
+
+```
+
+### Loading the data-set sourced from Retraction Watch on 12-Jan-2024
+
+```{r}
+data<- read.csv("retraction_watch.csv")
+abdc<- read.csv("abdc.csv")
+predatory<- read.csv("predatory.csv")
+
+```
+
+### Doing some wrangling of the data
+```{r}
+# Convert dates to POSIX format for the pupose of computation
+data$OriginalPaperDate <- as.POSIXct(data$OriginalPaperDate, format = "%m/%d/%Y %H:%M")
+data$RetractionDate <- as.POSIXct(data$RetractionDate, format = "%m/%d/%Y %H:%M")
+
+# Compute the difference in months
+data$DurationInMonths <- interval(start = data$OriginalPaperDate, end = data$RetractionDate) / months(1)
+
+# Extract year from RetractionDate
+data$RetractionYear <- year(data$RetractionDate)
+
+#Creating Clean names
+data<- data %>%
+  clean_names()
+
+abdc<- abdc%>%
+  clean_names()
+```
+
+### Creating the lists
+```{r}
+abdc_list <- unique(tolower(abdc$journal))
+retraction_list <- unique(tolower(data$journal))
+predatory_list <- unique(tolower(predatory$journal))
+```
+
+### Trying to create a venn diagram to see how these sets intersect
+```{r}
+# Define a list of lists for the Venn diagram
+list_of_lists <- list(
+  ABDC = abdc_list,
+  Retraction = retraction_list,
+  Predatory = predatory_list
+)
+
+# Specify the filename for the output
+output_filename <- "venn_diagram.png"
+
+# Create and save the Venn diagram
+venn.plot <- venn.diagram(
+  x = list_of_lists,
+  category.names = c("ABDC", "Retraction", "Predatory"),
+  filename = output_filename
+)
+```
+
+
+No Direct relationship between predatory practices and retractions: The fact that there are many retractions not linked to predatory journals might suggest that predatory practices are not the only reason for retractions. Retractions can occur in any journal and may be due to factors like data fabrication, plagiarism, or other ethical issues.
+
+Overlap between predatory and retraction: There is an overlap of just one journal between the predatory list and the ABDC list, suggesting that the ABDC list is largely successful in avoiding predatory journals. However, the presence of that one journal indicates that no vetting process is completely foolproof.
+
+Retractions are not limited to Predatory Journals: The larger number of retractions (7820) not associated with predatory journals implies that retractions are a broader issue in academic publishing, potentially due to factors like honest errors, misconduct, or problems in the peer-review process even in non-predatory journals.
+
+Considering only one predatory journal of the 1147 that are listed, has ever had a retracted article in it, is there something that we are overseeing?
+
+## Filter data for rows where article_type is "Research Article" or "Article in Press"
+```{r}
+filtered_data <- data[grepl("Research Article", data$article_type) | grepl("Article in Press", data$article_type), ]
+```
+
+Looking only at the intersection of ABDC and Retracted. 
+```{r}
+ret_int_abdc <- filtered_data %>%
+  filter(
+    tolower(filtered_data$journal) %in% tolower(abdc$journal)
+  )
+```
+
+There are 951 data points with the conference articles, and 883 without the conference and other types of articles.  
+
+
+We are only interested in the 883 entries. 
+
+Let's just describe this dataset now
+```{r}
+# Select the specified columns
+our_interest <- select(ret_int_abdc, record_id, subject, title, original_paper_date, reason, author)
+```
+
+## Plot Average Number of Subjects per Paper Over Time, and the number of retracted artciles in the ABDC
+```{r}
+# Calculate the number of subjects per record
+our_interest$subject_count <- sapply(strsplit(our_interest$subject, ";"), function(x) sum(nzchar(x)))
+
+# Extract the year from the original paper date
+our_interest$year <- format(our_interest$original_paper_date, "%Y")
+
+# Ensure year is treated as a continuous variable
+our_interest$year <- as.numeric(our_interest$year)
+
+# Create a summary data frame
+yearly_summary <- our_interest %>%
+  group_by(year) %>%
+  summarize(
+    record_count = n(),
+    avg_subject_count = mean(subject_count, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+# Ensure we have a row for every year in the range from 2000 to 2022
+yearly_summary <- data.frame(year = 1980:2022) %>%
+  left_join(yearly_summary, by = "year") %>%
+  replace_na(list(record_count = 0, avg_subject_count = 0))
+
+# Find the maximums for scaling the secondary axis
+max_records <- max(yearly_summary$record_count)
+max_avg_subjects <- max(yearly_summary$avg_subject_count)
+
+# Create the line plot with two y-axes and colored axis labels
+ggplot(yearly_summary, aes(x = year)) +
+  geom_line(aes(y = record_count), color = "blue") +
+  labs(x = "Year", y = "Number of Records", title = "Number of Retractions in ABDC (2022) Journals and Average Subjects per Year") +
+  theme_minimal() +
+  theme(axis.title.y = element_text(color = "blue")) +
+  scale_y_continuous(
+    "Number of Records",
+    sec.axis = sec_axis(~ . * max_avg_subjects / max_records, name = "Average Number of Subjects", labels = scales::comma)
+  ) +
+  geom_line(aes(y = avg_subject_count * max_records / max_avg_subjects), color = "red", linetype = "dashed") +
+  theme(axis.title.y.right = element_text(color = "red"))
+```
+
+
+
+## Create a Word Map from the 'Title' Variable
+```{r}
+library(wordcloud)
+library(tm)
+
+# Create a text corpus
+corpus = Corpus(VectorSource(our_interest$title))
+
+# Clean up the text
+corpus = tm_map(corpus, content_transformer(tolower))
+corpus = tm_map(corpus, removePunctuation)
+corpus = tm_map(corpus, removeNumbers)
+corpus = tm_map(corpus, removeWords, stopwords("english"))
+
+# Create a word cloud
+wordcloud(corpus, max.words = 100)
+
+```
+
+```{r}
+library(igraph)
+library(ggraph)
+
+# Apply a threshold and take absolute values
+threshold <- 0.9
+adj_matrix <- abs(subject_correlation)
+adj_matrix[adj_matrix < threshold] <- 0
+diag(adj_matrix) <- 0  # Remove self-loops
+
+# Create a graph from the adjusted adjacency matrix
+graph <- graph_from_adjacency_matrix(adj_matrix, weighted = TRUE, mode = "undirected")
+
+# Plot the network
+ggraph(graph, layout = "fr") +
+  geom_edge_link(aes(edge_alpha = weight), show.legend = FALSE) +
+  geom_node_point(color = "lightblue", size = 5) +
+  geom_node_text(aes(label = name), repel = TRUE) +
+  theme_minimal()
+
+```
+
+
+
+
+
+
+
+
+
+
+

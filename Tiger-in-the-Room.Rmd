@@ -1,0 +1,227 @@
+---
+title: "Tiger in the Room"
+output: html_notebook
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+### Loading the necessary packages for the project
+
+```{r}
+library(tidyverse) # Loads ggplot2, dplyr, tidyr, readr, purrr, tibble, and stringr
+library(readxl)    # For reading Excel files
+library(rvest)     # For web scraping
+library(httr)      # For working with HTTP
+library(rcrossref) # For using CrossRef's API
+library(janitor)   # For cleaning data
+library(reshape2)  # For reshaping data
+library(igraph)    # For graphing
+library(ggraph)    # For graphing
+library(scales)    # For graphing
+library(lubridate) # For time series work
+library(gridExtra) # For Grid making
+```
+
+### Loading the data-set sourced from Retraction Watch on 24-Dec-2023
+```{r}
+data<- read.csv("retraction_watch.csv")
+```
+
+### Doing some wrangling of the data
+```{r}
+# Convert dates to POSIX format for the pupose of computation
+data$OriginalPaperDate <- as.POSIXct(data$OriginalPaperDate, format = "%m/%d/%Y %H:%M")
+data$RetractionDate <- as.POSIXct(data$RetractionDate, format = "%m/%d/%Y %H:%M")
+
+# Compute the difference in months
+data$DurationInMonths <- interval(start = data$OriginalPaperDate, end = data$RetractionDate) / months(1)
+
+# Extract year from RetractionDate
+data$RetractionYear <- year(data$RetractionDate)
+
+#Creating Clean names
+data<- data %>%
+  clean_names()
+```
+
+### Creating two separate subsets now - one for business related, and one for non business
+```{r}
+# Define business-related subjects
+business_subjects <- c("Business - Management", 
+                       "Business - Economics", 
+                       "Business - Marketing", 
+                       "Business - General", 
+                       "Business - Manufacturing", 
+                       "Business - Accounting")
+
+# Create a single pattern string for matching
+pattern <- paste(business_subjects, collapse = "|")
+
+# This is the Business related subjects
+data_business <- data %>%
+  filter(str_detect(subject, pattern))
+
+# This is the Non Business related subjects
+data_nonbusiness <- data %>%
+  filter(!str_detect(subject, pattern))
+
+```
+
+### Creating temporary data stores
+```{r}
+data_temp<- data
+data_business_temp<- data_business
+data_nonbusiness_temp<- data_nonbusiness
+```
+
+### Attempting to perform the QAP correlation procedure:
+ 
+The purpose of this exercise is to test the association between two
+networks. For our purpose, there are a few networks that we can work
+with.
+
+They are as follows 1. Author - Country 2. Author - Institute 3.
+Author - Journal 4. Author - Subject 5. Author - Publisher 6. Author -
+Reason
+
+Which way does the relationship work? I don't yet know. But the plan is
+to create all the networks and see which one works for us. 
+
+```{r}
+input<- data_business
+```
+
+# Buidling the matrix defining co-authorship relationships
+
+```{r}
+# Split the 'author' column into multiple rows, separated by ';' and retain the associated 'record_id' for each author
+
+expanded_df <- input %>%
+  separate_rows(author, sep = ";") %>%
+  select(record_id, author) %>%
+    distinct(record_id, author, .keep_all = TRUE)
+
+# Remove leading and trailing whitespaces from author names
+expanded_df$author <- trimws(expanded_df$author)
+
+# Get the list of all unique authors and sort them alphabetically
+authors <- sort(unique(expanded_df$author))
+
+# Create an empty matrix with authors as row and column names, initialized to 0
+author_matrix <- matrix(0, nrow = length(authors), ncol = length(authors),
+                        dimnames = list(authors, authors))
+
+# Populate the matrix
+for (i in 1:nrow(expanded_df)) {
+  for (j in 1:nrow(expanded_df)) {
+    if (expanded_df$record_id[i] == expanded_df$record_id[j]) {
+      author_matrix[expanded_df$author[i], expanded_df$author[j]] <- 1
+    }
+  }
+}
+```
+
+# Doing the same thing, but with author institution relationship
+
+```{r}
+
+# Create a new empty data frame for author-institution pairs
+author_institution_pairs <- data.frame(author = character(), institution = character(), stringsAsFactors = FALSE)
+
+# Iterate through each row of the input data frame
+for (row in 1:nrow(input)) {
+  # Split the authors and institutions into separate vectors
+  authors <- strsplit(as.character(input$author[row]), ";")[[1]]
+  institutions <- strsplit(as.character(input$institution[row]), ";")[[1]]
+
+  # Trim whitespaces
+  authors <- trimws(authors)
+  institutions <- trimws(institutions)
+
+  # Create pairs and add to the new data frame
+  for (i in 1:length(authors)) {
+    author_institution_pairs <- rbind(author_institution_pairs, data.frame(author = authors[i], institution = institutions[i], stringsAsFactors = FALSE))
+  }
+}
+
+# Remove duplicates and NA values
+author_institution_pairs <- na.omit(unique(author_institution_pairs))
+
+# Get the list of all unique authors and sort them alphabetically
+authors <- sort(unique(author_institution_pairs$author))
+
+# Create an empty matrix with authors as row and column names, initialized to 0
+author_institution_matrix <- matrix(0, nrow = length(authors), ncol = length(authors),
+                                    dimnames = list(authors, authors))
+
+# Populate the matrix
+for (i in 1:nrow(author_institution_pairs)) {
+  for (j in 1:nrow(author_institution_pairs)) {
+    if (!is.na(author_institution_pairs$institution[i]) && !is.na(author_institution_pairs$institution[j])) {
+      if (author_institution_pairs$institution[i] == author_institution_pairs$institution[j]) {
+        author_institution_matrix[author_institution_pairs$author[i], author_institution_pairs$author[j]] <- 1
+      }
+    }
+  }
+}
+```
+
+
+# getting only the common entries
+```{r}
+# Get the common authors in both matrices
+common_authors <- intersect(rownames(author_matrix), rownames(author_institution_matrix))
+
+# Create new matrices with only the common authors
+common_author_matrix <- author_matrix[common_authors, common_authors]
+common_author_institution_matrix <- author_institution_matrix[common_authors, common_authors]
+
+# Optionally, if you want to make sure that both matrices are perfectly aligned:
+if (!identical(rownames(common_author_matrix), rownames(common_author_institution_matrix)) || 
+    !identical(colnames(common_author_matrix), colnames(common_author_institution_matrix))) {
+  stop("There is a mismatch in the row/column names between the matrices.")
+}
+```
+
+
+```{r}
+# Function to calculate the Pearson correlation between two matrices
+calc_correlation <- function(mat1, mat2) {
+  cor(c(mat1), c(mat2))
+}
+
+# Actual correlation
+actual_correlation <- calc_correlation(common_author_matrix, common_author_institution_matrix)
+
+# Number of permutations
+n_permutations <- 1000
+
+# Store correlations from permutations
+permuted_correlations <- numeric(n_permutations)
+
+# Permutation test
+set.seed(123)  # For reproducibility
+for (i in 1:n_permutations) {
+  # Shuffle one matrix
+  shuffled_matrix <- common_author_institution_matrix[sample(nrow(common_author_institution_matrix)), sample(ncol(common_author_institution_matrix))]
+  
+  # Calculate correlation with the shuffled matrix
+  permuted_correlations[i] <- calc_correlation(common_author_matrix, shuffled_matrix)
+}
+
+# Determine the proportion of permuted correlations at least as extreme as the actual correlation
+p_value <- sum(permuted_correlations >= actual_correlation) / n_permutations
+
+# Print results
+cat("Actual Correlation:", actual_correlation, "\n")
+cat("P-value:", p_value, "\n")
+
+```
+
+
+
+
+
+
+
