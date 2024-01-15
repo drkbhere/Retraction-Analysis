@@ -1,6 +1,8 @@
 ---
 title: "Lion in the Room"
-output: html_notebook
+output:
+  pdf_document: default
+  html_notebook: default
 ---
 
 
@@ -1003,7 +1005,7 @@ Let me show you.
 our_interest <- ret_int_abdc %>%
   mutate(country = as.character(country))
 
-# Assuming 'country' is a column where countries are separated by semicolons (and possibly followed by spaces)
+# 'country' is a column where countries are separated by semicolons (and possibly followed by spaces)
 data_country <- our_interest %>%
   separate_rows(country, sep = ";\\s*") # sep regex matches a semicolon followed by any number of spaces
 
@@ -1026,7 +1028,7 @@ Can in be that this is a problem is located to within certain countries? or is t
 Let's try and doing a QAP correlation to find out. 
 
 
-Creating retraaction-author-author network
+Creating retraction-author-author network
 ```{r}
 # Create a data frame where each row represents a single author for a given record_id
 author_records <- our_interest %>%
@@ -1051,82 +1053,110 @@ for (i in seq_len(nrow(author_records))) {
 diag(coauthor_retraction_matrix) <- 0
 
 ```
+Now we have a dataset which has all the retraction author's retraction network.. But then, this is only the retracted papers, and not the rest of all the papers that they have worked on. 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-Generating list of unique authors
+Building another matrix - this time to talk about the countries the authors are from. 
 ```{r}
-authors_list_1 <- expanded_dataset %>%
-  select(author) %>%
-  unique()
+# Splitting the author field as there could be multiple authors per record
+author_country <- our_interest %>%
+  separate_rows(author, sep = ";") %>%
+  distinct(record_id, author, country)
 
-write.csv(authors_list_1, "authors_list.csv")
+# Creating a list of unique authors
+unique_authors <- sort(unique(author_country$author))
+
+# Creating an empty matrix to store the connections
+author_country_matrix <- matrix(0, nrow = length(unique_authors), ncol = length(unique_authors))
+rownames(author_country_matrix) <- unique_authors
+colnames(author_country_matrix) <- unique_authors
+
+# Filling the matrix
+for (i in 1:length(unique_authors)) {
+  for (j in 1:length(unique_authors)) {
+    if (i != j) {
+      # Check if authors i and j are associated with the same country
+      common_countries <- intersect(author_country$country[author_country$author == unique_authors[i]],
+                                    author_country$country[author_country$author == unique_authors[j]])
+      if (length(common_countries) > 0) {
+        author_country_matrix[i, j] <- 1
+        author_country_matrix[j, i] <- 1 # Matrix is symmetric
+      }
+    }
+  }
+}
+
+diag(author_country_matrix) <- 0
 ```
 
 
 
 
-
-
-
-
-
-
-
+Trying to use asnipe and vegan together to run a QAP correlation. 
 
 ```{r}
-# Load necessary libraries
-library(rvest)
-library(httr)
-
-# URL of the Google Scholar profile
-url <- "https://scholar.google.com/citations?user=rq48Nj8AAAAJ&hl=en&oi=ao"
-
-# Read the web page
-page <- read_html(url)
-
-# Extract author name and affiliation
-author_name <- page %>% html_node("#gsc_prf_in") %>% html_text()
-affiliation <- page %>% html_node(".gsc_prf_il") %>% html_text()
-interests <- page %>% html_nodes(".gsc_prf_inta gs_ibl") %>% html_text()
-total_citations <- page %>% html_node("#gsc_rsb_st td.gsc_rsb_std") %>% html_text()
-co_authors <- page %>% html_nodes("#gsc_rsb_co a") %>% html_text()
-education_details <- page %>% html_nodes("css-selector-for-education") %>% html_text()
-total_papers <- page %>% html_nodes("#gsc_a_nn") %>% html_text()
-
-# Print the results
-print(paste("Author Name:", author_name))
-print(paste("Affiliation:", affiliation))
-print(paste("Interests:", paste(interests, collapse = ", ")))
-print(paste("Total Citations:", total_citations))
-print(paste("Co-Authors:", paste(co_authors, collapse = ", ")))
-print(paste("Education Details:", paste(education_details, collapse = ", ")))
-print(paste("Total Number of Papers:", total_papers))
+library(asnipe)
+library(vegan)
+qap_result <- mantel(coauthor_retraction_matrix, author_country_matrix, permutations = 1000)
+print(qap_result)
 
 ```
+
+This test suggests that there is a statistically significant, though relatively weak, positive correlation between the coauthor retraction matrix and the author country matrix. 
+This means that there is some level of association between the patterns or relationships represented by the country relationship matrix and the retraction relationship matrix.
+
+This is interesting.. 
+
+Now, maybe there is a stronger relationship to detect if we check the institute level relations. 
+
+
+Creating an instituion relationship matrix. 
+```{r}
+# Splitting the author field as there could be multiple authors per record
+author_institution <- our_interest %>%
+  separate_rows(author, sep = ";") %>%
+  distinct(record_id, author, institution)
+
+# Creating a list of unique authors
+unique_authors <- sort(unique(author_institution$author))
+
+# Creating an empty matrix to store the connections
+author_institution_matrix <- matrix(0, nrow = length(unique_authors), ncol = length(unique_authors))
+rownames(author_institution_matrix) <- unique_authors
+colnames(author_institution_matrix) <- unique_authors
+
+# Filling the matrix
+for (i in 1:length(unique_authors)) {
+  for (j in 1:length(unique_authors)) {
+    if (i != j) {
+      # Check if authors i and j are associated with the same institution
+      common_countries <- intersect(author_institution$institution[author_institution$author == unique_authors[i]],
+                                    author_institution$institution[author_institution$author == unique_authors[j]])
+      if (length(common_countries) > 0) {
+        author_institution_matrix[i, j] <- 1
+        author_institution_matrix[j, i] <- 1 # Matrix is symmetric
+      }
+    }
+  }
+}
+
+diag(author_institution_matrix) <- 0
+
+```
+
+
+Once again, Trying to run a QAP correlation. 
+```{r}
+qap_result <- mantel(coauthor_retraction_matrix, author_institution_matrix, permutations = 1000)
+print(qap_result)
+```
+
+
+This suggests a very strong positive correlation between the coauthor_retraction_matrix and the author_institution_matrix. The extremely low p-value indicates that this correlation is highly unlikely to have occurred by chance. This implies a significant association between the patterns or relationships represented in these two matrices, suggesting that the coauthorship retraction patterns are closely related to the institutions of the authors.
+
+I think we are doing something wrong in this approach. The matrices are correlated because of how the data was sourced. I wonder why there was not a 1.00 correlation.
 
 
 Creating author-publisher network
-
 ```{r}
 # Splitting the author field as there could be multiple authors per record
 author_split <- expanded_dataset %>%
@@ -1159,24 +1189,93 @@ for (i in 1:length(unique_authors)) {
 ```
 
 
+Once again, Trying to run a QAP correlation. This time to see if the author-publisher relationship has some impact..
+```{r}
+qap_result <- mantel(coauthor_retraction_matrix, author_publisher_matrix, permutations = 1000)
+print(qap_result)
+```
+
+The test suggests that there is a statistically significant, albeit weak, positive correlation between the patterns of coauthorship retraction and author publisher associations represented in the two matrices. However, given the low correlation coefficient, the strength of this association is not very strong.
 
 
+I'm just trying a few other things here. 
+
+Creating author-journal network
+```{r}
+# Splitting the author field as there could be multiple authors per record
+author_split <- expanded_dataset %>%
+  separate_rows(author, sep = ";") %>%
+  distinct(record_id, author, journal)
+
+# Creating a list of unique authors
+unique_authors <- sort(unique(author_split$author))
+
+# Creating an empty matrix to store the connections
+author_journal_matrix <- matrix(0, nrow = length(unique_authors), ncol = length(unique_authors))
+rownames(author_journal_matrix) <- unique_authors
+colnames(author_journal_matrix) <- unique_authors
+
+# Filling the matrix
+for (i in 1:length(unique_authors)) {
+  for (j in 1:length(unique_authors)) {
+    if (i != j) {
+      # Check if authors i and j have published with the same journal
+      common_journals <- intersect(author_split$journal[author_split$author == unique_authors[i]],
+                                     author_split$journal[author_split$author == unique_authors[j]])
+      if (length(common_journals) > 0) {
+        author_journal_matrix[i, j] <- 1
+        author_journal_matrix[j, i] <- 1 # Matrix is symmetric
+      }
+    }
+  }
+}
+
+```
 
 
+Once again, Trying to run a QAP correlation. This time to see if the author-journal relationship has some impact..
+```{r}
+qap_result <- mantel(coauthor_retraction_matrix, author_journal_matrix, permutations = 1000)
+print(qap_result)
+```
+
+Doing a subject-author relationship
+```{r}
+
+# Splitting the author and subject fields as there could be multiple authors and subjects per record
+author_subject_split <- expanded_dataset %>%
+  separate_rows(author, subject, sep = ";") %>%
+  distinct(record_id, author, subject)
+
+# Creating a list of unique authors and subjects
+unique_authors <- sort(unique(author_subject_split$author))
+unique_subjects <- sort(unique(author_subject_split$subject))
+
+# Creating an empty matrix to store the connections
+author_subject_matrix <- matrix(0, nrow = length(unique_authors), ncol = length(unique_authors))
+rownames(author_subject_matrix) <- unique_authors
+colnames(author_subject_matrix) <- unique_authors
+
+# Filling the matrix
+for (i in 1:length(unique_authors)) {
+  for (j in 1:length(unique_authors)) {
+    if (i != j) {
+      # Check if authors i and j have published in the same subject
+      common_subjects <- intersect(author_subject_split$subject[author_subject_split$author == unique_authors[i]],
+                                   author_subject_split$subject[author_subject_split$author == unique_authors[j]])
+      if (length(common_subjects) > 0) {
+        author_subject_matrix[i, j] <- 1
+        author_subject_matrix[j, i] <- 1 # Matrix is symmetric
+      }
+    }
+  }
+}
+```
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
+```{r}
+qap_result <- mantel(author_subject_matrix, author_journal_matrix, permutations = 1000)
+print(qap_result)
+```
 
 
