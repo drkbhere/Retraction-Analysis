@@ -583,6 +583,7 @@ data_temp<- data
 
 
 
+
 Trying to plot how retractions have been in Non Management disciplines
 ```{r}
 # Prepare data
@@ -749,7 +750,7 @@ country_count <- data_country %>%
 ggplot(country_count, aes(y = reorder(country, n), x = n)) +
     geom_bar(stat = "identity", position = "dodge") +
     theme(axis.text.y = element_text(size = 4)) +
-    labs(y = "Country", x = "Count", title = "Distribution of Countries - Non Management")
+    labs(y = "Country", x = "Count", title = "Distribution of Countries - Management")
 
 
 ```
@@ -1186,6 +1187,8 @@ for (i in 1:length(unique_authors)) {
   }
 }
 
+diag(author_publisher_matrix) <- 0
+
 ```
 
 
@@ -1230,6 +1233,8 @@ for (i in 1:length(unique_authors)) {
   }
 }
 
+diag(author_journal_matrix) <- 0
+
 ```
 
 
@@ -1270,6 +1275,9 @@ for (i in 1:length(unique_authors)) {
     }
   }
 }
+
+diag(author_subject_matrix) <- 0
+
 ```
 
 
@@ -1277,5 +1285,40 @@ for (i in 1:length(unique_authors)) {
 qap_result <- mantel(author_subject_matrix, author_journal_matrix, permutations = 1000)
 print(qap_result)
 ```
+
+
+
+## Feat: Community strcutures
+
+```{r}
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
