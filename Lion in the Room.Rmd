@@ -608,7 +608,11 @@ retractions_nonmanagement<- ggplot(yearly_data, aes(x = retraction_year)) +
                                          name = "Number of Retractions")) +
   labs(title = "Retractions over the Years: Duration and Count (Non Management Disciplines)",
        x = "Retraction Year") +
-  theme_minimal()
+  theme_minimal() + 
+  theme(
+    axis.title.y = element_text(color = "blue"), # Color the y-axis label blue
+    axis.title.y.right = element_text(color = "red") # Color the right y-axis label red
+  )
 ```
 
 Trying to plot how retractions have been in Management disciplines
@@ -624,18 +628,26 @@ max_duration <- max(yearly_data$average_duration, na.rm = TRUE)
 max_count <- max(yearly_data$retraction_count, na.rm = TRUE)
 yearly_data$NormalizedCount <- yearly_data$retraction_count / max_count * max_duration
 
-retractions_management<- ggplot(yearly_data, aes(x = retraction_year)) +
+# Plot
+retractions_management <- ggplot(yearly_data, aes(x = retraction_year)) +
   geom_line(aes(y = average_duration, group = 1), color = "blue") +
   geom_point(aes(y = average_duration), color = "blue") +
   geom_bar(aes(y = NormalizedCount), stat = "identity", fill = "red", alpha = 0.5) +
-    scale_x_continuous(limits = c(1990, NA)) +  # Limiting x-axis to start from 1970+
+  scale_x_continuous(limits = c(1990, NA)) +  # Limiting x-axis to start from 1990
+  scale_y_continuous(
+    name = "Average Duration in Months", 
+    sec.axis = sec_axis(~ . * max_count / max_duration, name = "Number of Retractions")
+  ) +
+  labs(title = "Retractions over the Years: Duration and Count (Management Disciplines)", x = "Retraction Year") +
+  theme_minimal() +
+  theme(
+    axis.title.y = element_text(color = "blue"), # Color the y-axis label blue
+    axis.title.y.right = element_text(color = "red") # Color the right y-axis label red
+  )
 
-  scale_y_continuous(name = "Average Duration in Months", 
-                     sec.axis = sec_axis(~ . * max_count / max_duration, 
-                                         name = "Number of Retractions")) +
-  labs(title = "Retractions over the Years: Duration and Count (Management Disciplines)",
-       x = "Retraction Year") +
-  theme_minimal()
+# Display the plot
+print(retractions_management)
+
 ```
 
 Displaying the plot
@@ -924,23 +936,11 @@ From this, it does look like management related publications (as classified by t
 
 
 ```{r}
-# Prepare data
-yearly_data <- ret_int_abdc %>%
-  group_by(retraction_year) %>%
-  summarize(average_duration = mean(duration_in_months, na.rm = TRUE),
-            retraction_count = n())
-
-# Normalize the RetractionCount for better visualization
-max_duration <- max(yearly_data$average_duration, na.rm = TRUE)
-max_count <- max(yearly_data$retraction_count, na.rm = TRUE)
-yearly_data$NormalizedCount <- yearly_data$retraction_count / max_count * max_duration
-
-retractions_management<- ggplot(yearly_data, aes(x = retraction_year)) +
+retractions_management <- ggplot(yearly_data, aes(x = retraction_year)) +
   geom_line(aes(y = average_duration, group = 1), color = "blue") +
   geom_point(aes(y = average_duration), color = "blue") +
   geom_bar(aes(y = NormalizedCount), stat = "identity", fill = "red", alpha = 0.5) +
-    scale_x_continuous(limits = c(2000, NA)) +
-
+  scale_x_continuous(limits = c(2000, NA)) +
   scale_y_continuous(name = "Average Duration in Months", 
                      sec.axis = sec_axis(~ . * max_count / max_duration, 
                                          name = "Number of Retractions")) +
@@ -949,11 +949,13 @@ retractions_management<- ggplot(yearly_data, aes(x = retraction_year)) +
   theme(
     plot.title = element_text(hjust = 0.5),  # Center-align the title
     plot.subtitle = element_text(hjust = 0.5),  # Center-align the subtitle if you have one
-    axis.title.x = element_text(hjust = 0.5)  # Center-align the x-axis label
+    axis.title.x = element_text(hjust = 0.5),  # Center-align the x-axis label
+    axis.title.y = element_text(color = "blue"), # Color the y-axis label blue
+    axis.title.y.right = element_text(color = "red") # Color the right y-axis label red
   )
 
+print(retractions_management)
 
-retractions_management
 ```
 
 
