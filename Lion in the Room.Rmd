@@ -601,7 +601,7 @@ retractions_nonmanagement<- ggplot(yearly_data, aes(x = retraction_year)) +
   geom_line(aes(y = average_duration, group = 1), color = "blue") +
   geom_point(aes(y = average_duration), color = "blue") +
   geom_bar(aes(y = NormalizedCount), stat = "identity", fill = "red", alpha = 0.5) +
-    scale_x_continuous(limits = c(1990, NA)) +  # Limiting x-axis to start from 1970+
+    scale_x_continuous(limits = c(2000, NA)) +  # Limiting x-axis to start from 1970+
 
   scale_y_continuous(name = "Average Duration in Months", 
                      sec.axis = sec_axis(~ . * max_count / max_duration, 
@@ -633,7 +633,7 @@ retractions_management <- ggplot(yearly_data, aes(x = retraction_year)) +
   geom_line(aes(y = average_duration, group = 1), color = "blue") +
   geom_point(aes(y = average_duration), color = "blue") +
   geom_bar(aes(y = NormalizedCount), stat = "identity", fill = "red", alpha = 0.5) +
-  scale_x_continuous(limits = c(1990, NA)) +  # Limiting x-axis to start from 1990
+  scale_x_continuous(limits = c(2000, NA)) +  # Limiting x-axis to start from 1990
   scale_y_continuous(
     name = "Average Duration in Months", 
     sec.axis = sec_axis(~ . * max_count / max_duration, name = "Number of Retractions")
@@ -644,9 +644,6 @@ retractions_management <- ggplot(yearly_data, aes(x = retraction_year)) +
     axis.title.y = element_text(color = "blue"), # Color the y-axis label blue
     axis.title.y.right = element_text(color = "red") # Color the right y-axis label red
   )
-
-# Display the plot
-print(retractions_management)
 
 ```
 
